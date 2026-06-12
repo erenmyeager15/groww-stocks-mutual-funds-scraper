@@ -35,7 +35,7 @@ Charges are made only after a real record is saved to the Apify Dataset.
 | `includeStockLivePrice` | boolean | Parse Groww stock pages for embedded live/delayed price data. |
 | `includeNfoFunds` | boolean | Include NFO fund results in addition to regular schemes. |
 
-## How to Scrape Groww Stocks and Mutual Funds
+## How to Scrape Groww Stocks and Mutual Funds (Step by Step)
 
 1. Choose `both`, `stocks`, or `mutual_funds`.
 2. Enter stock names, tickers, fund names, or search keywords.

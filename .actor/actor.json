@@ -19,7 +19,7 @@
     "memoryMbytes": 1024,
     "timeoutSecs": 14400
   },
-  "categories": ["BUSINESS", "RESEARCH", "PRICE_COMPARISON"],
+  "categories": ["OTHER", "AUTOMATION", "DEVELOPER_TOOLS"],
   "pricingInfo": {
     "pricingModel": "PAY_PER_EVENT",
     "pricingPerEvent": {
