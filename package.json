@@ -1,0 +1,23 @@
+{
+  "name": "groww-stocks-mutual-funds-scraper",
+  "version": "1.0.0",
+  "description": "Apify Actor for scraping Groww stocks and mutual funds data.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "dev": "tsx src/main.ts"
+  },
+  "dependencies": {
+    "apify": "^3.7.2"
+  },
+  "devDependencies": {
+    "@apify/tsconfig": "^0.1.2",
+    "@types/node": "^20.19.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

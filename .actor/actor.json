@@ -1,0 +1,37 @@
+{
+  "actorSpecification": 1,
+  "name": "groww-stocks-mutual-funds-scraper",
+  "title": "Groww Stocks & Mutual Funds Scraper",
+  "description": "Scrape Groww stock and mutual fund data including prices, NAV, returns, ratings, AUM, fundamentals, market cap, and investment details.",
+  "version": "1.0",
+  "buildTag": "latest",
+  "meta": {
+    "templateId": "ts-start"
+  },
+  "dockerfile": "Dockerfile",
+  "input": "../INPUT_SCHEMA.json",
+  "readme": "../README.md",
+  "storages": {
+    "dataset": "./dataset_schema.json"
+  },
+  "defaultRunOptions": {
+    "build": "latest",
+    "memoryMbytes": 1024,
+    "timeoutSecs": 14400
+  },
+  "categories": ["BUSINESS", "RESEARCH", "PRICE_COMPARISON"],
+  "pricingInfo": {
+    "pricingModel": "PAY_PER_EVENT",
+    "pricingPerEvent": {
+      "actorChargeEvents": {
+        "asset-scraped": {
+          "eventTitle": "Asset scraped",
+          "eventDescription": "Charged once for each clean Groww stock or mutual fund record saved to the dataset.",
+          "eventPriceUsd": 0.002,
+          "isPrimaryEvent": true,
+          "isOneTimeEvent": false
+        }
+      }
+    }
+  }
+}

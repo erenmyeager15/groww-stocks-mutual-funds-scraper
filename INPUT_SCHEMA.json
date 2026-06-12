@@ -1,0 +1,48 @@
+{
+  "title": "Groww Stocks & Mutual Funds Scraper Input",
+  "description": "Search Groww for Indian stocks and mutual funds and export clean investment data.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "source": {
+      "title": "Source",
+      "type": "string",
+      "description": "Choose which Groww asset type to scrape.",
+      "editor": "select",
+      "default": "both",
+      "enum": ["both", "stocks", "mutual_funds"],
+      "enumTitles": ["Stocks and mutual funds", "Stocks only", "Mutual funds only"]
+    },
+    "keywords": {
+      "title": "Search keywords",
+      "type": "array",
+      "description": "One or more Groww search keywords, stock names, tickers, or fund names.",
+      "editor": "stringList",
+      "prefill": ["reliance", "parag parikh flexi cap"],
+      "items": {
+        "type": "string"
+      }
+    },
+    "maxResults": {
+      "title": "Maximum results",
+      "type": "integer",
+      "description": "Maximum number of unique assets to save across all keywords.",
+      "minimum": 1,
+      "maximum": 500,
+      "default": 50
+    },
+    "includeStockLivePrice": {
+      "title": "Include stock live price",
+      "type": "boolean",
+      "description": "Fetch Groww stock pages to extract embedded live or delayed stock price data when available.",
+      "default": true
+    },
+    "includeNfoFunds": {
+      "title": "Include NFO funds",
+      "type": "boolean",
+      "description": "Include NFO fund search results in addition to regular mutual fund schemes.",
+      "default": false
+    }
+  },
+  "required": ["source", "keywords"]
+}

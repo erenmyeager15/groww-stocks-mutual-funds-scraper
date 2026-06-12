@@ -1,0 +1,103 @@
+{
+  "actorSpecification": 1,
+  "fields": {
+    "type": "object",
+    "properties": {
+      "source": { "type": "string", "title": "Source", "example": "groww" },
+      "query": { "type": "string", "title": "Query", "example": "reliance" },
+      "assetType": { "type": "string", "title": "Asset Type", "example": "stock" },
+      "name": { "type": "string", "title": "Name", "example": "Reliance Industries" },
+      "shortName": { "type": ["string", "null"], "title": "Short Name", "example": "Reliance Industries" },
+      "searchId": { "type": "string", "title": "Groww Search ID", "example": "reliance-industries-ltd" },
+      "symbol": { "type": ["string", "null"], "title": "Symbol / Code", "example": "RELIANCE" },
+      "isin": { "type": ["string", "null"], "title": "ISIN", "example": "INE002A01018" },
+      "category": { "type": ["string", "null"], "title": "Category", "example": "Oil" },
+      "subCategory": { "type": ["string", "null"], "title": "Sub Category", "example": "Large Cap" },
+      "logoUrl": { "type": ["string", "null"], "title": "Logo URL" },
+      "growwUrl": { "type": "string", "title": "Groww URL" },
+      "primaryMetricLabel": { "type": "string", "title": "Primary Metric" },
+      "primaryMetricValue": { "type": ["number", "null"], "title": "Primary Value" },
+      "secondaryMetricLabel": { "type": "string", "title": "Secondary Metric" },
+      "secondaryMetricValue": { "type": ["number", "null"], "title": "Secondary Value" },
+      "tertiaryMetricLabel": { "type": "string", "title": "Tertiary Metric" },
+      "tertiaryMetricValue": { "type": ["number", "null"], "title": "Tertiary Value" },
+      "ratingMetricLabel": { "type": "string", "title": "Rating Metric" },
+      "ratingMetricValue": { "type": ["number", "null"], "title": "Rating Value" },
+      "stock": { "type": ["object", "null"], "title": "Stock Details" },
+      "mutualFund": { "type": ["object", "null"], "title": "Mutual Fund Details" },
+      "scrapedAt": { "type": "string", "title": "Scraped At" }
+    }
+  },
+  "views": {
+    "overview": {
+      "title": "Assets",
+      "description": "Clean overview of Groww stocks and mutual funds.",
+      "transformation": {
+        "fields": [
+          "logoUrl",
+          "assetType",
+          "name",
+          "symbol",
+          "category",
+          "subCategory",
+          "primaryMetricLabel",
+          "primaryMetricValue",
+          "secondaryMetricLabel",
+          "secondaryMetricValue",
+          "tertiaryMetricLabel",
+          "tertiaryMetricValue",
+          "ratingMetricLabel",
+          "ratingMetricValue"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "logoUrl": { "label": "Logo", "format": "image" },
+          "assetType": { "label": "Type", "format": "text" },
+          "name": { "label": "Name", "format": "text" },
+          "symbol": { "label": "Symbol", "format": "text" },
+          "category": { "label": "Category", "format": "text" },
+          "subCategory": { "label": "Subcategory", "format": "text" },
+          "primaryMetricLabel": { "label": "Metric", "format": "text" },
+          "primaryMetricValue": { "label": "Value", "format": "number" },
+          "secondaryMetricLabel": { "label": "Metric 2", "format": "text" },
+          "secondaryMetricValue": { "label": "Value 2", "format": "number" },
+          "tertiaryMetricLabel": { "label": "Metric 3", "format": "text" },
+          "tertiaryMetricValue": { "label": "Value 3", "format": "number" },
+          "ratingMetricLabel": { "label": "Metric 4", "format": "text" },
+          "ratingMetricValue": { "label": "Value 4", "format": "number" }
+        }
+      }
+    },
+    "details": {
+      "title": "Details",
+      "description": "Full Groww records with URL and nested stock or mutual fund details.",
+      "transformation": {
+        "fields": [
+          "assetType",
+          "name",
+          "searchId",
+          "symbol",
+          "isin",
+          "category",
+          "subCategory",
+          "growwUrl",
+          "stock",
+          "mutualFund",
+          "query",
+          "scrapedAt"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "growwUrl": { "label": "Groww URL", "format": "link" },
+          "stock": { "label": "Stock Details", "format": "object" },
+          "mutualFund": { "label": "Mutual Fund Details", "format": "object" },
+          "scrapedAt": { "label": "Scraped At", "format": "date" }
+        }
+      }
+    }
+  }
+}
