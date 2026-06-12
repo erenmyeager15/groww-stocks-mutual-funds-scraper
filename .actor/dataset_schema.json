@@ -6,6 +6,7 @@
       "source": { "type": "string", "title": "Source", "example": "groww" },
       "query": { "type": "string", "title": "Query", "example": "reliance" },
       "assetType": { "type": "string", "title": "Asset Type", "example": "stock" },
+      "assetTypeLabel": { "type": "string", "title": "Type", "example": "Stock" },
       "name": { "type": "string", "title": "Name", "example": "Reliance Industries" },
       "shortName": { "type": ["string", "null"], "title": "Short Name", "example": "Reliance Industries" },
       "searchId": { "type": "string", "title": "Groww Search ID", "example": "reliance-industries-ltd" },
@@ -39,7 +40,7 @@
       "transformation": {
         "fields": [
           "logoUrl",
-          "assetType",
+          "assetTypeLabel",
           "name",
           "symbol",
           "category",
@@ -54,7 +55,7 @@
         "component": "table",
         "properties": {
           "logoUrl": { "label": "Logo", "format": "image" },
-          "assetType": { "label": "Type", "format": "text" },
+          "assetTypeLabel": { "label": "Type", "format": "text" },
           "name": { "label": "Name", "format": "text" },
           "symbol": { "label": "Symbol", "format": "text" },
           "category": { "label": "Category", "format": "text" },
@@ -72,6 +73,7 @@
       "transformation": {
         "fields": [
           "assetType",
+          "assetTypeLabel",
           "name",
           "searchId",
           "symbol",

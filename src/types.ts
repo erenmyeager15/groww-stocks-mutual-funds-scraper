@@ -55,6 +55,7 @@ export interface GrowwAssetRecord {
     source: 'groww';
     query: string;
     assetType: AssetType;
+    assetTypeLabel: string;
     name: string;
     shortName: string | null;
     searchId: string;
