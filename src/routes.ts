@@ -152,6 +152,11 @@ async function buildStockRecord(
         businessSummary: stringValue(details?.businessSummary),
     };
 
+    if (!isUsefulStockRecord(stock, header)) {
+        log.debug('Skipping sparse Groww stock artifact', { searchId, name });
+        return null;
+    }
+
     return {
         source: 'groww',
         query,
@@ -165,6 +170,10 @@ async function buildStockRecord(
         subCategory: stringValue(stats?.cappedType),
         logoUrl: stringValue(header?.logoUrl),
         growwUrl: `${BASE_URL}/stocks/${searchId}`,
+        priceOrNav: currentPrice,
+        changeOrReturn: stock.dayChangePercent,
+        marketCapOrAum: marketCapCr,
+        peOrRating: stock.peRatio,
         primaryMetricLabel: 'LTP',
         primaryMetricValue: currentPrice,
         secondaryMetricLabel: 'Day change %',
@@ -245,6 +254,10 @@ async function buildMutualFundRecord(
         subCategory: stringValue(detail.sub_category),
         logoUrl: stringValue(detail.logo_url),
         growwUrl: `${BASE_URL}/mutual-funds/${searchId}`,
+        priceOrNav: nav,
+        changeOrReturn: return1y,
+        marketCapOrAum: aumCr,
+        peOrRating: growwRating,
         primaryMetricLabel: 'NAV',
         primaryMetricValue: nav,
         secondaryMetricLabel: '1Y return %',
@@ -333,6 +346,13 @@ function isWantedItem(item: GrowwSearchItem, source: AssetSource, includeNfoFund
 
 function isStockItem(item: GrowwSearchItem): boolean {
     return item.entity_type === 'Stocks';
+}
+
+function isUsefulStockRecord(stock: StockDetails, header: Record<string, unknown> | null): boolean {
+    const hasTradeData = stock.currentPrice !== null || stock.marketCapCr !== null;
+    const hasCompanyProfile = Boolean(stock.industryName || stock.yearHighPrice !== null || stock.yearLowPrice !== null);
+    const isStockHeader = stringValue(header?.type) === 'STOCK' || Boolean(stock.nseScriptCode || stock.bseScriptCode);
+    return isStockHeader && (hasTradeData || hasCompanyProfile);
 }
 
 function isMutualFundItem(item: GrowwSearchItem, includeNfoFunds: boolean): boolean {

@@ -64,6 +64,10 @@ export interface GrowwAssetRecord {
     subCategory: string | null;
     logoUrl: string | null;
     growwUrl: string;
+    priceOrNav: number | null;
+    changeOrReturn: number | null;
+    marketCapOrAum: number | null;
+    peOrRating: number | null;
     primaryMetricLabel: string;
     primaryMetricValue: number | null;
     secondaryMetricLabel: string;
