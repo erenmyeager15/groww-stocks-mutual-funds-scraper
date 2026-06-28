@@ -130,7 +130,12 @@ The actor searches Groww's public web search endpoint, filters stock and mutual 
 - Stock current prices come from Groww page data and may be live or delayed depending on Groww's own display.
 - Some older or renamed mutual fund search IDs may return empty details; those records are skipped.
 - Search results depend on Groww's ranking for the keywords you provide.
-- This actor is for research and data extraction only; it is not financial advice.
+
+## Disclaimer
+
+This Actor provides public market data for research and informational use only. It is not financial advice.
+
+Each unique asset is saved and charged atomically. The Actor stops further detail requests as soon as the user's spending limit is reached.
 
 ## Responsible Use
 

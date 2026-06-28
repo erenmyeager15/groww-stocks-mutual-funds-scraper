@@ -42,19 +42,30 @@ export function normalizeInput(input: ActorInput): SearchOptions {
     };
 }
 
-export async function scrapeGroww(options: SearchOptions): Promise<number> {
+export async function scrapeGroww(options: SearchOptions): Promise<{ records: number; spendingLimitReached: boolean }> {
     const seen = new Set<string>();
     let pushed = 0;
+    let spendingLimitReached = false;
     const searchGroups: Array<{ keyword: string; items: GrowwSearchItem[] }> = [];
 
-    for (const keyword of options.keywords) {
-        const searchItems = await fetchSearch(keyword);
-        log.info('Groww search parsed', { keyword, results: searchItems.length });
-        searchGroups.push({ keyword, items: searchItems });
+	    for (const keyword of options.keywords) {
+	        let searchItems: GrowwSearchItem[] = [];
+	        try {
+	            searchItems = await fetchSearch(keyword);
+	        } catch (error) {
+	            log.warning('Skipping Groww keyword after search request failure', {
+	                keyword,
+	                reason: error instanceof Error ? error.message : String(error),
+	            });
+	            continue;
+	        }
+	        log.info('Groww search parsed', { keyword, results: searchItems.length });
+	        searchGroups.push({ keyword, items: searchItems });
     }
 
     const maxGroupLength = Math.max(0, ...searchGroups.map((group) => group.items.length));
 
+    processing:
     for (let index = 0; index < maxGroupLength && pushed < options.maxResults; index++) {
         for (const group of searchGroups) {
             if (pushed >= options.maxResults) break;
@@ -75,16 +86,26 @@ export async function scrapeGroww(options: SearchOptions): Promise<number> {
 
             if (!record) continue;
 
-            seen.add(dedupeKey);
-            await Actor.pushData(record);
-            await chargeForRecord();
-            pushed++;
+            const chargeResult = await Actor.pushData(record, 'asset-scraped');
+            const recordWasSaved = chargeResult.chargedCount > 0 || !chargeResult.eventChargeLimitReached;
+            if (recordWasSaved) {
+                seen.add(dedupeKey);
+                pushed++;
+            }
+
+            if (chargeResult.eventChargeLimitReached) {
+                spendingLimitReached = true;
+                const message = `Stopped at the user's spending limit after ${pushed} asset(s).`;
+                await Actor.setStatusMessage(message);
+                log.warning(message);
+                break processing;
+            }
 
             await sleep(randomInteger(250, 800));
         }
     }
 
-    return pushed;
+    return { records: pushed, spendingLimitReached };
 }
 
 async function fetchSearch(keyword: string): Promise<GrowwSearchItem[]> {
@@ -102,10 +123,19 @@ async function buildStockRecord(
     query: string,
     searchId: string,
     includeLivePrice: boolean,
-): Promise<GrowwAssetRecord | null> {
-    const detailUrl = `${BASE_URL}/v1/api/stocks_data/v1/company/search_id/${encodeURIComponent(searchId)}`;
-    const detail = await fetchJson<Record<string, unknown>>(detailUrl);
-    const header = asObject(detail.header);
+	): Promise<GrowwAssetRecord | null> {
+	    const detailUrl = `${BASE_URL}/v1/api/stocks_data/v1/company/search_id/${encodeURIComponent(searchId)}`;
+	    let detail: Record<string, unknown>;
+	    try {
+	        detail = await fetchJson<Record<string, unknown>>(detailUrl);
+	    } catch (error) {
+	        log.warning('Skipping Groww stock after detail request failure', {
+	            searchId,
+	            reason: error instanceof Error ? error.message : String(error),
+	        });
+	        return null;
+	    }
+	    const header = asObject(detail.header);
     const details = asObject(detail.details);
     const stats = asObject(detail.stats);
     const priceData = asObject(detail.priceData);
@@ -193,10 +223,19 @@ async function buildMutualFundRecord(
     item: GrowwSearchItem,
     query: string,
     searchId: string,
-): Promise<GrowwAssetRecord | null> {
-    const detailUrl = `${BASE_URL}/v1/api/data/mf/web/v1/scheme/search/${encodeURIComponent(searchId)}`;
-    const detail = await fetchJson<Record<string, unknown>>(detailUrl);
-    const resolvedSearchId = stringValue(detail.search_id);
+	): Promise<GrowwAssetRecord | null> {
+	    const detailUrl = `${BASE_URL}/v1/api/data/mf/web/v1/scheme/search/${encodeURIComponent(searchId)}`;
+	    let detail: Record<string, unknown>;
+	    try {
+	        detail = await fetchJson<Record<string, unknown>>(detailUrl);
+	    } catch (error) {
+	        log.warning('Skipping Groww mutual fund after detail request failure', {
+	            searchId,
+	            reason: error instanceof Error ? error.message : String(error),
+	        });
+	        return null;
+	    }
+	    const resolvedSearchId = stringValue(detail.search_id);
     if (!resolvedSearchId && !stringValue(detail.scheme_name)) {
         log.debug('Skipping empty Groww mutual fund detail response', { searchId });
         return null;
@@ -359,16 +398,6 @@ function isUsefulStockRecord(stock: StockDetails, header: Record<string, unknown
 
 function isMutualFundItem(item: GrowwSearchItem, includeNfoFunds: boolean): boolean {
     return item.entity_type === 'Scheme' || (includeNfoFunds && item.entity_type === 'Nfo');
-}
-
-async function chargeForRecord(): Promise<void> {
-    try {
-        await Actor.charge({ eventName: 'asset-scraped' });
-    } catch (error) {
-        log.debug('Actor.charge skipped or failed in current environment', {
-            message: error instanceof Error ? error.message : String(error),
-        });
-    }
 }
 
 function cleanText(value: unknown): string | null {

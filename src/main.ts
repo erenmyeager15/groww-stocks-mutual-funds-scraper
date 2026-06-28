@@ -14,10 +14,13 @@ await Actor.main(async () => {
         includeNfoFunds: options.includeNfoFunds,
     });
 
-    const records = await scrapeGroww(options);
-    if (records === 0) {
+    const result = await scrapeGroww(options);
+    if (result.records === 0 && !result.spendingLimitReached) {
         throw new Error('No Groww stock or mutual fund records were scraped. Try broader keywords or another source filter.');
     }
 
-    log.info('Groww scrape finished', { records });
+    if (!result.spendingLimitReached) {
+        await Actor.setStatusMessage(`Finished with ${result.records} unique asset(s).`);
+        log.info('Groww scrape finished', { records: result.records });
+    }
 });

@@ -1,0 +1,14 @@
+{
+  "actorOutputSchemaVersion": 1,
+  "title": "Groww Stocks & Mutual Funds Scraper Output",
+  "description": "Structured Groww asset records for stocks and mutual funds with queries, asset types, names, symbols, ISINs, categories, URLs, prices or NAV, returns, market cap or AUM, ratings, stock fundamentals, mutual fund details, and scraped timestamps.",
+  "type": "object",
+  "properties": {
+    "results": {
+      "type": "string",
+      "title": "Groww asset records",
+      "description": "Clean dataset items containing public Groww stock and mutual fund metadata, price or NAV, performance, rating, fundamentals, investment detail, and URL data.",
+      "template": "{{links.apiDefaultDatasetUrl}}/items"
+    }
+  }
+}

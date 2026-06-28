@@ -27,6 +27,7 @@
       "title": "Maximum results",
       "type": "integer",
       "description": "Maximum number of unique assets to save across all keywords.",
+      "editor": "number",
       "minimum": 1,
       "maximum": 500,
       "default": 50
@@ -35,12 +36,14 @@
       "title": "Include stock live price",
       "type": "boolean",
       "description": "Fetch Groww stock pages to extract embedded live or delayed stock price data when available.",
+      "editor": "checkbox",
       "default": true
     },
     "includeNfoFunds": {
       "title": "Include NFO funds",
       "type": "boolean",
       "description": "Include NFO fund search results in addition to regular mutual fund schemes.",
+      "editor": "checkbox",
       "default": false
     }
   },
