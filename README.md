@@ -1,6 +1,8 @@
-# Groww Stocks & Mutual Funds Scraper - Prices, NAV & Returns
+# Groww Stocks & Mutual Funds Scraper - Indian Stock Prices, Mutual Fund NAV & Returns
 
-Scrape Groww stocks and mutual funds data for Indian market research, portfolio discovery, investment comparison, and financial data workflows. Export results to JSON, CSV, Excel, or HTML, or pull them via the Apify API. The actor uses public Groww web data and does not require a Groww login or API key.
+Scrape public Groww stock and mutual fund data for Indian market research, portfolio discovery, investment comparison, and finance dashboards. Enter stock names, tickers, fund names, or broad search keywords, then export clean results to JSON, CSV, Excel, HTML, Google Sheets, or your own app through the Apify API.
+
+The actor does not require a Groww login or API key. It is designed for quick research runs as well as repeatable data workflows.
 
 ## What It Extracts
 
@@ -17,6 +19,42 @@ Scrape Groww stocks and mutual funds data for Indian market research, portfolio 
 - Feed finance dashboards, sheets, or investment research tools.
 - Monitor search-visible Groww assets for market intelligence.
 
+## Quick Start
+
+Use this input for a small first run:
+
+```json
+{
+  "source": "both",
+  "keywords": ["reliance", "parag parikh flexi cap"],
+  "maxResults": 10,
+  "includeStockLivePrice": true,
+  "includeNfoFunds": false
+}
+```
+
+For stocks only:
+
+```json
+{
+  "source": "stocks",
+  "keywords": ["reliance", "tcs", "hdfc bank"],
+  "maxResults": 25,
+  "includeStockLivePrice": true
+}
+```
+
+For mutual funds only:
+
+```json
+{
+  "source": "mutual_funds",
+  "keywords": ["parag parikh flexi cap", "nifty index fund", "small cap fund"],
+  "maxResults": 25,
+  "includeNfoFunds": false
+}
+```
+
 ## Pricing
 
 | Event | When charged | Price | 1,000 records | 10,000 records |
@@ -25,15 +63,15 @@ Scrape Groww stocks and mutual funds data for Indian market research, portfolio 
 
 Charges are made only after a real record is saved to the Apify Dataset.
 
-## Input
+## Input Fields
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `source` | `both`, `stocks`, `mutual_funds` | Choose which Groww asset type to scrape. |
-| `keywords` | string array | Groww search keywords, stock names, tickers, or fund names. |
-| `maxResults` | integer | Maximum unique records to save, up to 500. |
-| `includeStockLivePrice` | boolean | Parse Groww stock pages for embedded live/delayed price data. |
-| `includeNfoFunds` | boolean | Include NFO fund results in addition to regular schemes. |
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `source` | `both`, `stocks`, `mutual_funds` | `both` | Choose whether to collect stocks, mutual funds, or both. |
+| `keywords` | string array | `["reliance", "parag parikh flexi cap"]` | Groww search keywords, stock names, tickers, fund names, or fund categories. |
+| `maxResults` | integer | `50` | Maximum unique records to save across all keywords, up to 500. |
+| `includeStockLivePrice` | boolean | `true` | Fetch Groww stock pages for embedded live or delayed stock price data when available. |
+| `includeNfoFunds` | boolean | `false` | Include NFO fund results in addition to regular mutual fund schemes. |
 
 ## How to Scrape Groww Stocks and Mutual Funds (Step by Step)
 
@@ -42,6 +80,18 @@ Charges are made only after a real record is saved to the Apify Dataset.
 3. Set the maximum number of results.
 4. Run the actor.
 5. Download the dataset or access it through the Apify API.
+
+## Output Overview
+
+Each dataset item represents one unique Groww asset. The actor saves stock and mutual fund records in one consistent shape so you can compare them in a table or branch by `assetType` in code.
+
+| Field group | Important fields |
+| --- | --- |
+| Identity | `assetType`, `assetTypeLabel`, `name`, `shortName`, `searchId`, `symbol`, `isin`, `growwUrl` |
+| Table metrics | `priceOrNav`, `changeOrReturn`, `marketCapOrAum`, `peOrRating`, `primaryMetricLabel`, `primaryMetricValue` |
+| Stock details | `stock.currentPrice`, `stock.marketCapCr`, `stock.peRatio`, `stock.pbRatio`, `stock.roePercent`, `stock.yearHighPrice`, `stock.yearLowPrice`, `stock.industryName` |
+| Mutual fund details | `mutualFund.nav`, `mutualFund.aumCr`, `mutualFund.expenseRatioPercent`, `mutualFund.growwRating`, `mutualFund.risk`, `mutualFund.return1y`, `mutualFund.return3y`, `mutualFund.return5y` |
+| Run context | `query`, `source`, `scrapedAt` |
 
 ## Sample Output
 
@@ -123,19 +173,27 @@ Charges are made only after a real record is saved to the Apify Dataset.
 
 ## How It Works
 
-The actor searches Groww's public web search endpoint, filters stock and mutual fund results, fetches Groww detail JSON for each asset, and optionally parses embedded stock page data for live or delayed prices. Each unique Groww asset is deduplicated by asset type and search ID.
+The actor searches Groww's public web search endpoint, filters stock and mutual fund results, fetches Groww detail JSON for each asset, and optionally parses embedded stock page data for live or delayed prices. Each unique Groww asset is deduplicated by asset type and search ID before being saved.
+
+Records are saved with the `asset-scraped` event only after a clean item is pushed to the Apify Dataset. If the user's spending limit is reached, the actor stops further detail requests.
 
 ## Known Limits
 
 - Stock current prices come from Groww page data and may be live or delayed depending on Groww's own display.
 - Some older or renamed mutual fund search IDs may return empty details; those records are skipped.
 - Search results depend on Groww's ranking for the keywords you provide.
+- This actor is for public research data. It does not place trades, manage portfolios, or provide investment recommendations.
+
+## Tips For Better Results
+
+- Use exact stock names or ticker-like keywords when you want specific listed companies.
+- Use category-style terms such as `small cap fund`, `index fund`, or `flexi cap` when discovering mutual funds.
+- Keep `maxResults` small for first runs, then increase it after checking the output.
+- Use `source: "stocks"` or `source: "mutual_funds"` when you want cleaner category-specific exports.
 
 ## Disclaimer
 
 This Actor provides public market data for research and informational use only. It is not financial advice.
-
-Each unique asset is saved and charged atomically. The Actor stops further detail requests as soon as the user's spending limit is reached.
 
 ## Responsible Use
 
