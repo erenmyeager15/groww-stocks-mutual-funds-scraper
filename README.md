@@ -7,7 +7,7 @@ The actor does not require a Groww login or API key. It is designed for quick re
 ## What It Extracts
 
 - Stock and mutual fund names, Groww search IDs, symbols, ISINs, logos, and Groww URLs.
-- Stock live or delayed LTP, day change, volume, 52-week range, market cap, P/E, P/B, ROE, EPS, dividend yield, industry, CEO, headquarters, website, and summary when available.
+- Stock live or delayed LTP, day change, volume, 52-week range, market cap, P/E, P/B, ROE, EPS, dividend yield, industry, headquarters, website, and summary when available.
 - Mutual fund NAV, NAV date, AUM, expense ratio, Groww rating, risk, 1D/1W/1M/3M/6M/1Y/3Y/5Y/10Y returns, fund house, manager, category, plan type, scheme type, launch date, and minimum investment.
 - Clean overview metrics for table browsing plus nested `stock` and `mutualFund` detail objects for API users.
 
@@ -25,9 +25,9 @@ Use this input for a small first run:
 
 ```json
 {
-  "source": "both",
-  "keywords": ["reliance", "parag parikh flexi cap"],
-  "maxResults": 10,
+  "source": "stocks",
+  "keywords": ["reliance"],
+  "maxResults": 1,
   "includeStockLivePrice": true,
   "includeNfoFunds": false
 }
@@ -57,19 +57,20 @@ For mutual funds only:
 
 ## Pricing
 
-| Event | When charged | Price | 1,000 records | 10,000 records |
+| Event | When charged | Active price | 1,000 records | 10,000 records |
 | --- | --- | --- | --- | --- |
-| `asset-scraped` | Each clean Groww stock or mutual fund record saved | `$0.002` | `$2.00` | `$20.00` |
+| `apify-actor-start` | Small startup event when a run starts | `$0.00005` per GB, minimum one event | - | - |
+| `asset-scraped` | Each validated Groww stock or mutual fund record saved | `$0.002` | `$2.00` | `$20.00` |
 
-Charges are made only after a real record is saved to the Apify Dataset.
+The startup event covers basic run initialization. The per-asset event is charged atomically only when a validated record is saved to the Apify Dataset. These values mirror the Actor's active Store pricing; this reliability update does not raise them.
 
 ## Input Fields
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `source` | `both`, `stocks`, `mutual_funds` | `both` | Choose whether to collect stocks, mutual funds, or both. |
-| `keywords` | string array | `["reliance", "parag parikh flexi cap"]` | Groww search keywords, stock names, tickers, fund names, or fund categories. |
-| `maxResults` | integer | `50` | Maximum unique records to save across all keywords, up to 500. |
+| `source` | `both`, `stocks`, `mutual_funds` | `stocks` | Choose whether to collect stocks, mutual funds, or both. |
+| `keywords` | string array | `["reliance"]` | Up to 25 Groww search keywords, stock names, tickers, fund names, or fund categories. |
+| `maxResults` | integer | `1` | Maximum unique records to save across all keywords, up to 500. |
 | `includeStockLivePrice` | boolean | `true` | Fetch Groww stock pages for embedded live or delayed stock price data when available. |
 | `includeNfoFunds` | boolean | `false` | Include NFO fund results in addition to regular mutual fund schemes. |
 
@@ -91,7 +92,7 @@ Each dataset item represents one unique Groww asset. The actor saves stock and m
 | Table metrics | `priceOrNav`, `changeOrReturn`, `marketCapOrAum`, `peOrRating`, `primaryMetricLabel`, `primaryMetricValue` |
 | Stock details | `stock.currentPrice`, `stock.marketCapCr`, `stock.peRatio`, `stock.pbRatio`, `stock.roePercent`, `stock.yearHighPrice`, `stock.yearLowPrice`, `stock.industryName` |
 | Mutual fund details | `mutualFund.nav`, `mutualFund.aumCr`, `mutualFund.expenseRatioPercent`, `mutualFund.growwRating`, `mutualFund.risk`, `mutualFund.return1y`, `mutualFund.return3y`, `mutualFund.return5y` |
-| Run context | `query`, `source`, `scrapedAt` |
+| Run context | `query`, `source`, `currency`, `scrapedAt` |
 
 ## Sample Output
 
@@ -110,6 +111,7 @@ Each dataset item represents one unique Groww asset. The actor saves stock and m
   "subCategory": "Large Cap",
   "logoUrl": "https://assets-netstorage.groww.in/stock-assets/logos2/RELIANCE.webp",
   "growwUrl": "https://groww.in/stocks/reliance-industries-ltd",
+  "currency": "INR",
   "priceOrNav": 1281.2,
   "changeOrReturn": 1.44,
   "marketCapOrAum": 1708617.87,
@@ -145,6 +147,7 @@ Each dataset item represents one unique Groww asset. The actor saves stock and m
   "symbol": "122639",
   "category": "Equity",
   "subCategory": "Flexi Cap",
+  "currency": "INR",
   "priceOrNav": 88.484,
   "changeOrReturn": -3.62,
   "marketCapOrAum": 141446.73,
@@ -173,15 +176,16 @@ Each dataset item represents one unique Groww asset. The actor saves stock and m
 
 ## How It Works
 
-The actor searches Groww's public web search endpoint, filters stock and mutual fund results, fetches Groww detail JSON for each asset, and optionally parses embedded stock page data for live or delayed prices. Each unique Groww asset is deduplicated by asset type and search ID before being saved.
+The actor searches Groww's public web search endpoint, validates the response shape, filters stock and mutual fund results, fetches Groww detail JSON with bounded retries and request deadlines, and optionally parses embedded stock page data for live or delayed prices. Live-price records are matched to the exact NSE or BSE code. Each unique Groww asset is deduplicated by asset type and search ID before detail work.
 
-Records are saved with the `asset-scraped` event only after a clean item is pushed to the Apify Dataset. If the user's spending limit is reached, the actor stops further detail requests.
+Records are saved with the `asset-scraped` event only after a clean item is pushed to the Apify Dataset. If the user's spending limit is reached, the actor stops further detail requests. The Actor also writes `RUN_STATUS` to the default key-value store with per-keyword outcomes and diagnostic counters. A valid search with no matching assets succeeds with an empty dataset; blocked, malformed, or all-detail-failed runs fail visibly instead of pretending to be empty.
 
 ## Known Limits
 
 - Stock current prices come from Groww page data and may be live or delayed depending on Groww's own display.
 - Some older or renamed mutual fund search IDs may return empty details; those records are skipped.
 - Search results depend on Groww's ranking for the keywords you provide.
+- The Actor has an internal 15-minute safety stop in addition to the platform timeout, so broad runs can stop cleanly with partial results.
 - This actor is for public research data. It does not place trades, manage portfolios, or provide investment recommendations.
 
 ## Tips For Better Results

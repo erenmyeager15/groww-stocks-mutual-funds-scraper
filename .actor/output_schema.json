@@ -9,6 +9,12 @@
       "title": "Groww asset records",
       "description": "Clean dataset items containing public Groww stock and mutual fund metadata, price or NAV, performance, rating, fundamentals, investment detail, and URL data.",
       "template": "{{links.apiDefaultDatasetUrl}}/items"
+    },
+    "runStatus": {
+      "type": "string",
+      "title": "Run diagnostics",
+      "description": "Machine-readable run outcome, per-keyword status, failure counters, and stop reason.",
+      "template": "{{links.apiDefaultKeyValueStoreUrl}}/records/RUN_STATUS"
     }
   }
 }

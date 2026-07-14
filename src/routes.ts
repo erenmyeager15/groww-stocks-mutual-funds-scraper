@@ -1,19 +1,22 @@
 import { Actor, log } from 'apify';
 import type {
-    ActorInput,
     AssetSource,
     GrowwAssetRecord,
     GrowwLivePrice,
     GrowwSearchItem,
-    GrowwSearchResponse,
+    GrowwRunStatus,
+    KeywordRunStatus,
     MutualFundDetails,
+    ScrapeResult,
     SearchOptions,
     StockDetails,
 } from './types.js';
 
 const BASE_URL = 'https://groww.in';
-const MAX_RESULTS = 500;
 const SEARCH_PAGE_SIZE = 30;
+const REQUEST_TIMEOUT_MS = 20_000;
+const MAX_FETCH_ATTEMPTS = 3;
+const RUNTIME_LIMIT_MS = 15 * 60 * 1000;
 const DEFAULT_HEADERS: Record<string, string> = {
     accept: 'application/json,text/html,*/*',
     'accept-language': 'en-US,en;q=0.9',
@@ -22,45 +25,129 @@ const DEFAULT_HEADERS: Record<string, string> = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36',
 };
 
-export function normalizeInput(input: ActorInput): SearchOptions {
-    const rawKeywords = Array.isArray(input.keywords) && input.keywords.length > 0
-        ? input.keywords
-        : input.keyword
-            ? [input.keyword]
-            : ['reliance', 'parag parikh flexi cap'];
-
-    const source = input.source && ['stocks', 'mutual_funds', 'both'].includes(input.source)
-        ? input.source
-        : 'both';
-
-    return {
-        source,
-        keywords: unique(rawKeywords.map((keyword) => cleanText(keyword)).filter((keyword): keyword is string => Boolean(keyword))),
-        maxResults: clampInteger(input.maxResults ?? 50, 1, MAX_RESULTS),
-        includeStockLivePrice: input.includeStockLivePrice !== false,
-        includeNfoFunds: input.includeNfoFunds === true,
-    };
+interface ChargeResult {
+    chargedCount: number;
+    eventChargeLimitReached: boolean;
 }
 
-export async function scrapeGroww(options: SearchOptions): Promise<{ records: number; spendingLimitReached: boolean }> {
-    const seen = new Set<string>();
-    let pushed = 0;
-    let spendingLimitReached = false;
-    const searchGroups: Array<{ keyword: string; items: GrowwSearchItem[] }> = [];
+export interface ScrapeDependencies {
+    fetch: typeof globalThis.fetch;
+    pushData: (record: GrowwAssetRecord, eventName: string) => Promise<ChargeResult>;
+    sleep: (milliseconds: number) => Promise<void>;
+    now: () => number;
+    isoNow: () => string;
+    randomDelay: () => number;
+    requestTimeoutMs: number;
+    maxFetchAttempts: number;
+    runtimeLimitMs: number;
+}
 
-	    for (const keyword of options.keywords) {
-	        let searchItems: GrowwSearchItem[] = [];
-	        try {
-	            searchItems = await fetchSearch(keyword);
-	        } catch (error) {
-	            log.warning('Skipping Groww keyword after search request failure', {
-	                keyword,
-	                reason: error instanceof Error ? error.message : String(error),
-	            });
-	            continue;
-	        }
-	        log.info('Groww search parsed', { keyword, results: searchItems.length });
-	        searchGroups.push({ keyword, items: searchItems });
+interface SearchGroup {
+    keyword: string;
+    items: GrowwSearchItem[];
+    status: KeywordRunStatus;
+}
+
+interface StockFundamentals {
+    marketCapCr: number | null;
+    peRatio: number | null;
+    pbRatio: number | null;
+    dividendYieldPercent: number | null;
+    epsTtm: number | null;
+    roePercent: number | null;
+    bookValue: number | null;
+    cappedType: string | null;
+}
+
+interface BuiltRecord {
+    record: GrowwAssetRecord;
+    livePriceMissing: boolean;
+}
+
+class HttpStatusError extends Error {
+    constructor(
+        public readonly status: number,
+        public readonly retryable: boolean,
+        url: string,
+    ) {
+        super(`HTTP ${status} from ${url}`);
+        this.name = 'HttpStatusError';
+    }
+}
+
+const defaultDependencies: ScrapeDependencies = {
+    fetch: globalThis.fetch,
+    pushData: async (record, eventName) => Actor.pushData(record, eventName),
+    sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    now: () => Date.now(),
+    isoNow: () => new Date().toISOString(),
+    randomDelay: () => randomInteger(150, 500),
+    requestTimeoutMs: REQUEST_TIMEOUT_MS,
+    maxFetchAttempts: MAX_FETCH_ATTEMPTS,
+    runtimeLimitMs: RUNTIME_LIMIT_MS,
+};
+
+export async function scrapeGroww(
+    options: SearchOptions,
+    dependencyOverrides: Partial<ScrapeDependencies> = {},
+): Promise<ScrapeResult> {
+    const dependencies = { ...defaultDependencies, ...dependencyOverrides };
+    const startedAt = dependencies.now();
+    const attempted = new Set<string>();
+    const searchGroups: SearchGroup[] = [];
+    let pushed = 0;
+    let searchRequests = 0;
+    let successfulSearches = 0;
+    let failedSearches = 0;
+    let eligibleCandidates = 0;
+    let duplicateCandidates = 0;
+    let detailFailures = 0;
+    let invalidRecords = 0;
+    let livePriceMisses = 0;
+    let spendingLimitReached = false;
+    let runtimeLimitReached = false;
+
+    const keywordResults = options.keywords.map<KeywordRunStatus>((keyword) => ({
+        keyword,
+        outcome: 'not_run',
+        searchResults: 0,
+        eligibleResults: 0,
+        saved: 0,
+        detailFailures: 0,
+        invalidRecords: 0,
+        error: null,
+        lastDetailError: null,
+    }));
+
+    for (const keywordStatus of keywordResults) {
+        if (hasReachedRuntimeLimit(startedAt, dependencies)) {
+            runtimeLimitReached = true;
+            break;
+        }
+
+        searchRequests++;
+        try {
+            const items = await fetchSearch(keywordStatus.keyword, dependencies);
+            const eligible = items.filter((item) => isWantedItem(item, options.source, options.includeNfoFunds));
+            successfulSearches++;
+            keywordStatus.outcome = 'empty';
+            keywordStatus.searchResults = items.length;
+            keywordStatus.eligibleResults = eligible.length;
+            searchGroups.push({ keyword: keywordStatus.keyword, items, status: keywordStatus });
+            log.info('Groww search parsed', {
+                keyword: keywordStatus.keyword,
+                results: items.length,
+                eligible: eligible.length,
+            });
+        } catch (error) {
+            failedSearches++;
+            keywordStatus.outcome = 'failed';
+            keywordStatus.error = errorMessage(error);
+            log.warning('Groww search request failed', {
+                keyword: keywordStatus.keyword,
+                reason: keywordStatus.error,
+            });
+        }
     }
 
     const maxGroupLength = Math.max(0, ...searchGroups.map((group) => group.items.length));
@@ -68,54 +155,147 @@ export async function scrapeGroww(options: SearchOptions): Promise<{ records: nu
     processing:
     for (let index = 0; index < maxGroupLength && pushed < options.maxResults; index++) {
         for (const group of searchGroups) {
-            if (pushed >= options.maxResults) break;
+            if (pushed >= options.maxResults) break processing;
+            if (hasReachedRuntimeLimit(startedAt, dependencies)) {
+                runtimeLimitReached = true;
+                break processing;
+            }
+
             const item = group.items[index];
-            if (!item) continue;
-            if (!isWantedItem(item, options.source, options.includeNfoFunds)) continue;
+            if (!item || !isWantedItem(item, options.source, options.includeNfoFunds)) continue;
 
-            const searchId = cleanText(item.search_id) ?? cleanText(item.id);
-            if (!searchId) continue;
-
+            const searchId = cleanText(item.search_id, 300) ?? cleanText(item.id, 300);
             const assetType = isStockItem(item) ? 'stock' : 'mutual_fund';
-            const dedupeKey = `${assetType}:${searchId}`;
-            if (seen.has(dedupeKey)) continue;
+            if (!searchId) {
+                eligibleCandidates++;
+                invalidRecords++;
+                group.status.invalidRecords++;
+                group.status.lastDetailError = 'Eligible search result did not contain a search ID.';
+                continue;
+            }
 
-            const record = assetType === 'stock'
-                ? await buildStockRecord(item, group.keyword, searchId, options.includeStockLivePrice)
-                : await buildMutualFundRecord(item, group.keyword, searchId);
+            const dedupeKey = `${assetType}:${searchId.toLocaleLowerCase('en-US')}`;
+            if (attempted.has(dedupeKey)) {
+                duplicateCandidates++;
+                continue;
+            }
+            attempted.add(dedupeKey);
+            eligibleCandidates++;
 
-            if (!record) continue;
+            let built: BuiltRecord;
+            try {
+                built = assetType === 'stock'
+                    ? await buildStockRecord(item, group.keyword, searchId, options.includeStockLivePrice, dependencies)
+                    : await buildMutualFundRecord(item, group.keyword, searchId, dependencies);
+            } catch (error) {
+                detailFailures++;
+                group.status.detailFailures++;
+                group.status.lastDetailError = errorMessage(error);
+                log.warning('Skipping Groww asset after detail request failure', {
+                    assetType,
+                    searchId,
+                    reason: group.status.lastDetailError,
+                });
+                continue;
+            }
 
-            const chargeResult = await Actor.pushData(record, 'asset-scraped');
+            if (built.livePriceMissing) livePriceMisses++;
+            const validationError = validateRecord(built.record);
+            if (validationError) {
+                invalidRecords++;
+                group.status.invalidRecords++;
+                group.status.lastDetailError = validationError;
+                log.warning('Skipping invalid Groww record', { searchId, reason: validationError });
+                continue;
+            }
+
+            const chargeResult = await dependencies.pushData(built.record, 'asset-scraped');
             const recordWasSaved = chargeResult.chargedCount > 0 || !chargeResult.eventChargeLimitReached;
             if (recordWasSaved) {
-                seen.add(dedupeKey);
                 pushed++;
+                group.status.saved++;
+                group.status.outcome = 'results';
             }
 
             if (chargeResult.eventChargeLimitReached) {
                 spendingLimitReached = true;
-                const message = `Stopped at the user's spending limit after ${pushed} asset(s).`;
-                await Actor.setStatusMessage(message);
-                log.warning(message);
+                log.warning(`Stopped at the user's spending limit after ${pushed} asset(s).`);
                 break processing;
             }
 
-            await sleep(randomInteger(250, 800));
+            if (pushed < options.maxResults) await dependencies.sleep(dependencies.randomDelay());
         }
     }
 
-    return { records: pushed, spendingLimitReached };
+    for (const keywordStatus of keywordResults) {
+        if (keywordStatus.outcome === 'failed' || keywordStatus.outcome === 'not_run' || keywordStatus.saved > 0) continue;
+        if (keywordStatus.eligibleResults > 0 && (keywordStatus.detailFailures > 0 || keywordStatus.invalidRecords > 0)) {
+            keywordStatus.outcome = 'failed';
+            keywordStatus.error = keywordStatus.lastDetailError ?? 'All eligible detail records failed.';
+        } else {
+            keywordStatus.outcome = 'empty';
+        }
+    }
+
+    const durationMs = Math.max(0, dependencies.now() - startedAt);
+    let status: GrowwRunStatus['status'];
+    let failureMessage: string | null = null;
+
+    if (spendingLimitReached) {
+        status = 'spending_limit';
+    } else if (runtimeLimitReached && pushed > 0) {
+        status = 'runtime_limit';
+    } else if (runtimeLimitReached) {
+        status = 'failed';
+        failureMessage = 'Groww scrape reached the 15-minute safety limit before saving a record.';
+    } else if (pushed > 0) {
+        status = 'results';
+    } else if (failedSearches > 0) {
+        status = 'failed';
+        failureMessage = 'No records were saved because one or more Groww search requests failed.';
+    } else if (eligibleCandidates > 0 && (detailFailures > 0 || invalidRecords > 0)) {
+        status = 'failed';
+        failureMessage = 'Groww returned matching assets, but all detail records failed validation or retrieval.';
+    } else {
+        status = 'empty';
+    }
+
+    const runStatus: GrowwRunStatus = {
+        status,
+        source: options.source,
+        keywords: options.keywords,
+        requestedMaxResults: options.maxResults,
+        records: pushed,
+        searchRequests,
+        successfulSearches,
+        failedSearches,
+        eligibleCandidates,
+        duplicateCandidates,
+        detailFailures,
+        invalidRecords,
+        livePriceMisses,
+        spendingLimitReached,
+        runtimeLimitReached,
+        durationMs,
+        keywordResults,
+        failureMessage,
+    };
+
+    return {
+        records: pushed,
+        spendingLimitReached,
+        runtimeLimitReached,
+        failureMessage,
+        runStatus,
+    };
 }
 
-async function fetchSearch(keyword: string): Promise<GrowwSearchItem[]> {
+async function fetchSearch(keyword: string, dependencies: ScrapeDependencies): Promise<GrowwSearchItem[]> {
     const url = new URL('/v1/api/search/v3/query/global/st_query', BASE_URL);
     url.searchParams.set('query', keyword);
     url.searchParams.set('page', '0');
     url.searchParams.set('size', String(SEARCH_PAGE_SIZE));
-
-    const response = await fetchJson<GrowwSearchResponse>(url.toString());
-    return response.data?.content ?? [];
+    return parseSearchResponse(await fetchJson(url.toString(), dependencies));
 }
 
 async function buildStockRecord(
@@ -123,34 +303,29 @@ async function buildStockRecord(
     query: string,
     searchId: string,
     includeLivePrice: boolean,
-	): Promise<GrowwAssetRecord | null> {
-	    const detailUrl = `${BASE_URL}/v1/api/stocks_data/v1/company/search_id/${encodeURIComponent(searchId)}`;
-	    let detail: Record<string, unknown>;
-	    try {
-	        detail = await fetchJson<Record<string, unknown>>(detailUrl);
-	    } catch (error) {
-	        log.warning('Skipping Groww stock after detail request failure', {
-	            searchId,
-	            reason: error instanceof Error ? error.message : String(error),
-	        });
-	        return null;
-	    }
-	    const header = asObject(detail.header);
+    dependencies: ScrapeDependencies,
+): Promise<BuiltRecord> {
+    const detailUrl = `${BASE_URL}/v1/api/stocks_data/v1/company/search_id/${encodeURIComponent(searchId)}`;
+    const detail = asObject(await fetchJson(detailUrl, dependencies));
+    if (!detail) throw new Error('Groww stock detail response was not an object.');
+
+    const header = asObject(detail.header);
     const details = asObject(detail.details);
-    const stats = asObject(detail.stats);
     const priceData = asObject(detail.priceData);
     const nsePriceData = asObject(priceData?.nse);
     const bsePriceData = asObject(priceData?.bse);
-    const live = includeLivePrice ? await fetchStockLivePrice(searchId, header) : null;
+    const fundamentals = parseFundamentalMetrics(detail.fundamentals, detail.stats);
+    const live = includeLivePrice ? await fetchStockLivePrice(searchId, header, dependencies) : null;
 
-    const nseScriptCode = stringValue(header?.nseScriptCode) ?? stringValue(item.nse_scrip_code);
-    const bseScriptCode = stringValue(header?.bseScriptCode) ?? stringValue(item.bse_scrip_code);
-    const name = stringValue(header?.displayName)
-        ?? stringValue(details?.fullName)
-        ?? stringValue(item.title)
+    const nseScriptCode = cleanText(header?.nseScriptCode, 80) ?? cleanText(item.nse_scrip_code, 80);
+    const bseScriptCode = cleanText(header?.bseScriptCode, 80) ?? cleanText(item.bse_scrip_code, 80);
+    const name = cleanText(header?.displayName, 300)
+        ?? cleanText(details?.fullName, 300)
+        ?? cleanText(item.title, 300)
         ?? searchId;
-    const marketCapCr = numberOrNull(stats?.marketCap);
-    const currentPrice = numberOrNull(live?.ltp);
+    const currentPrice = numberOrNull(live?.ltp)
+        ?? numberOrNull(nsePriceData?.ltp ?? nsePriceData?.currentPrice)
+        ?? numberOrNull(bsePriceData?.ltp ?? bsePriceData?.currentPrice);
 
     const stock: StockDetails = {
         nseScriptCode,
@@ -163,88 +338,86 @@ async function buildStockRecord(
         volume: numberOrNull(live?.volume),
         dayChange: numberOrNull(live?.dayChange),
         dayChangePercent: roundedNumberOrNull(live?.dayChangePerc, 2),
-        marketCapCr,
-        peRatio: roundedNumberOrNull(stats?.peRatio, 2),
-        pbRatio: roundedNumberOrNull(stats?.pbRatio, 2),
-        dividendYieldPercent: roundedNumberOrNull(stats?.dividendYieldInPercent ?? stats?.divYield, 2),
-        epsTtm: roundedNumberOrNull(stats?.epsTtm, 2),
-        roePercent: roundedNumberOrNull(stats?.returnOnEquity ?? stats?.roe, 2),
-        bookValue: roundedNumberOrNull(stats?.bookValue, 2),
-        cappedType: stringValue(stats?.cappedType),
-        yearHighPrice: numberOrNull(live?.yearHighPrice) ?? numberOrNull(nsePriceData?.yearHighPrice) ?? numberOrNull(bsePriceData?.yearHighPrice),
-        yearLowPrice: numberOrNull(live?.yearLowPrice) ?? numberOrNull(nsePriceData?.yearLowPrice) ?? numberOrNull(bsePriceData?.yearLowPrice),
-        industryName: stringValue(header?.industryName),
-        headquarters: stringValue(details?.headquarters),
-        ceo: stringValue(details?.ceo),
-        managingDirector: stringValue(details?.managingDirector),
+        marketCapCr: fundamentals.marketCapCr,
+        peRatio: fundamentals.peRatio,
+        pbRatio: fundamentals.pbRatio,
+        dividendYieldPercent: fundamentals.dividendYieldPercent,
+        epsTtm: fundamentals.epsTtm,
+        roePercent: fundamentals.roePercent,
+        bookValue: fundamentals.bookValue,
+        cappedType: fundamentals.cappedType,
+        yearHighPrice: numberOrNull(live?.yearHighPrice)
+            ?? numberOrNull(nsePriceData?.yearHighPrice)
+            ?? numberOrNull(bsePriceData?.yearHighPrice),
+        yearLowPrice: numberOrNull(live?.yearLowPrice)
+            ?? numberOrNull(nsePriceData?.yearLowPrice)
+            ?? numberOrNull(bsePriceData?.yearLowPrice),
+        industryName: cleanText(header?.industryName, 200),
+        headquarters: cleanText(details?.headquarters, 300),
         foundedYear: integerOrNull(details?.foundedYear),
-        websiteUrl: stringValue(details?.websiteUrl),
-        businessSummary: stringValue(details?.businessSummary),
+        websiteUrl: safeHttpUrl(details?.websiteUrl),
+        businessSummary: cleanText(details?.businessSummary, 3_000),
     };
 
     if (!isUsefulStockRecord(stock, header)) {
-        log.debug('Skipping sparse Groww stock artifact', { searchId, name });
-        return null;
+        throw new Error('Groww stock detail response did not contain recognizable stock data.');
     }
 
-    return {
+    const record: GrowwAssetRecord = {
         source: 'groww',
         query,
         assetType: 'stock',
         assetTypeLabel: 'Stock',
         name,
-        shortName: stringValue(header?.shortName) ?? stringValue(item.company_short_name),
+        shortName: cleanText(header?.shortName, 300) ?? cleanText(item.company_short_name, 300),
         searchId,
         symbol: nseScriptCode ?? bseScriptCode,
-        isin: stringValue(header?.isin) ?? stringValue(item.isin),
-        category: stringValue(header?.industryName),
-        subCategory: stringValue(stats?.cappedType),
-        logoUrl: stringValue(header?.logoUrl),
-        growwUrl: `${BASE_URL}/stocks/${searchId}`,
+        isin: cleanText(header?.isin, 80) ?? cleanText(item.isin, 80),
+        category: cleanText(header?.industryName, 200),
+        subCategory: fundamentals.cappedType,
+        logoUrl: safeHttpUrl(header?.logoUrl),
+        growwUrl: `${BASE_URL}/stocks/${encodeURIComponent(searchId)}`,
+        currency: 'INR',
         priceOrNav: currentPrice,
         changeOrReturn: stock.dayChangePercent,
-        marketCapOrAum: marketCapCr,
+        marketCapOrAum: stock.marketCapCr,
         peOrRating: stock.peRatio,
         primaryMetricLabel: 'LTP',
         primaryMetricValue: currentPrice,
         secondaryMetricLabel: 'Day change %',
         secondaryMetricValue: stock.dayChangePercent,
         tertiaryMetricLabel: 'Market cap (Cr)',
-        tertiaryMetricValue: marketCapCr,
+        tertiaryMetricValue: stock.marketCapCr,
         ratingMetricLabel: 'P/E',
         ratingMetricValue: stock.peRatio,
         stock,
         mutualFund: null,
-        scrapedAt: new Date().toISOString(),
+        scrapedAt: dependencies.isoNow(),
     };
+
+    return { record, livePriceMissing: includeLivePrice && live === null };
 }
 
 async function buildMutualFundRecord(
     item: GrowwSearchItem,
     query: string,
     searchId: string,
-	): Promise<GrowwAssetRecord | null> {
-	    const detailUrl = `${BASE_URL}/v1/api/data/mf/web/v1/scheme/search/${encodeURIComponent(searchId)}`;
-	    let detail: Record<string, unknown>;
-	    try {
-	        detail = await fetchJson<Record<string, unknown>>(detailUrl);
-	    } catch (error) {
-	        log.warning('Skipping Groww mutual fund after detail request failure', {
-	            searchId,
-	            reason: error instanceof Error ? error.message : String(error),
-	        });
-	        return null;
-	    }
-	    const resolvedSearchId = stringValue(detail.search_id);
-    if (!resolvedSearchId && !stringValue(detail.scheme_name)) {
-        log.debug('Skipping empty Groww mutual fund detail response', { searchId });
-        return null;
+    dependencies: ScrapeDependencies,
+): Promise<BuiltRecord> {
+    const detailUrl = `${BASE_URL}/v1/api/data/mf/web/v1/scheme/search/${encodeURIComponent(searchId)}`;
+    const detail = asObject(await fetchJson(detailUrl, dependencies));
+    if (!detail) throw new Error('Groww mutual fund detail response was not an object.');
+
+    const resolvedSearchId = cleanText(detail.search_id, 300);
+    const schemeName = cleanText(detail.scheme_name, 300);
+    if (!resolvedSearchId && !schemeName) {
+        throw new Error('Groww mutual fund detail response was empty.');
     }
 
     const returnStats = asObject(arrayValue(detail.return_stats)?.[0]);
-    const name = stringValue(detail.scheme_name)
-        ?? stringValue(detail.fund_name)
-        ?? stringValue(item.title)
+    const name = schemeName
+        ?? cleanText(detail.fund_name, 300)
+        ?? cleanText(item.title, 300)
         ?? searchId;
     const nav = numberOrNull(detail.nav);
     const return1y = roundedNumberOrNull(returnStats?.return1y, 2);
@@ -252,16 +425,16 @@ async function buildMutualFundRecord(
     const growwRating = numberOrNull(detail.groww_rating);
 
     const mutualFund: MutualFundDetails = {
-        schemeCode: stringValue(detail.scheme_code) ?? stringValue(item.scheme_code),
-        schemeName: stringValue(detail.scheme_name),
-        fundHouse: stringValue(detail.fund_house),
-        fundManager: stringValue(detail.fund_manager),
+        schemeCode: cleanText(detail.scheme_code, 100) ?? cleanText(item.scheme_code, 100),
+        schemeName,
+        fundHouse: cleanText(detail.fund_house, 300),
+        fundManager: cleanText(detail.fund_manager, 500),
         nav,
-        navDate: stringValue(detail.nav_date),
+        navDate: cleanText(detail.nav_date, 80),
         aumCr,
         expenseRatioPercent: roundedNumberOrNull(detail.expense_ratio, 2),
         growwRating,
-        risk: stringValue(returnStats?.risk),
+        risk: cleanText(returnStats?.risk, 100),
         riskRating: integerOrNull(returnStats?.risk_rating),
         return1d: roundedNumberOrNull(returnStats?.return1d, 2),
         return1w: roundedNumberOrNull(returnStats?.return1w, 2),
@@ -275,26 +448,27 @@ async function buildMutualFundRecord(
         returnSinceLaunch: roundedNumberOrNull(returnStats?.return_since_created, 2),
         minInvestmentAmount: numberOrNull(detail.min_investment_amount),
         minSipInvestment: numberOrNull(detail.min_sip_investment),
-        launchDate: stringValue(detail.launch_date),
-        planType: stringValue(detail.plan_type),
-        schemeType: stringValue(detail.scheme_type),
+        launchDate: cleanText(detail.launch_date, 80),
+        planType: cleanText(detail.plan_type, 100),
+        schemeType: cleanText(detail.scheme_type, 100),
         availableForInvestment: booleanOrNull(detail.available_for_investment),
     };
 
-    return {
+    const record: GrowwAssetRecord = {
         source: 'groww',
         query,
         assetType: 'mutual_fund',
         assetTypeLabel: 'Mutual fund',
         name,
-        shortName: stringValue(detail.fund_name) ?? stringValue(item.title),
+        shortName: cleanText(detail.fund_name, 300) ?? cleanText(item.title, 300),
         searchId: resolvedSearchId ?? searchId,
         symbol: mutualFund.schemeCode,
-        isin: stringValue(detail.isin) ?? stringValue(item.isin),
-        category: stringValue(detail.category),
-        subCategory: stringValue(detail.sub_category),
-        logoUrl: stringValue(detail.logo_url),
-        growwUrl: `${BASE_URL}/mutual-funds/${searchId}`,
+        isin: cleanText(detail.isin, 80) ?? cleanText(item.isin, 80),
+        category: cleanText(detail.category, 200),
+        subCategory: cleanText(detail.sub_category, 200),
+        logoUrl: safeHttpUrl(detail.logo_url),
+        growwUrl: `${BASE_URL}/mutual-funds/${encodeURIComponent(searchId)}`,
+        currency: 'INR',
         priceOrNav: nav,
         changeOrReturn: return1y,
         marketCapOrAum: aumCr,
@@ -309,74 +483,184 @@ async function buildMutualFundRecord(
         ratingMetricValue: growwRating,
         stock: null,
         mutualFund,
-        scrapedAt: new Date().toISOString(),
+        scrapedAt: dependencies.isoNow(),
     };
+
+    return { record, livePriceMissing: false };
 }
 
-async function fetchStockLivePrice(searchId: string, header: Record<string, unknown> | null): Promise<GrowwLivePrice | null> {
+async function fetchStockLivePrice(
+    searchId: string,
+    header: Record<string, unknown> | null,
+    dependencies: ScrapeDependencies,
+): Promise<GrowwLivePrice | null> {
     try {
-        const html = await fetchText(`${BASE_URL}/stocks/${searchId}`);
+        const html = await fetchText(`${BASE_URL}/stocks/${encodeURIComponent(searchId)}`, dependencies);
         const nextData = parseNextData(html);
-        const pageProps = asObject(asObject(nextData.props)?.pageProps);
-        const livePriceData = asObject(pageProps?.livePriceData);
-        if (!livePriceData) return null;
-
-        const nseCode = stringValue(header?.nseScriptCode);
-        const bseCode = stringValue(header?.bseScriptCode);
-        const candidates = [nseCode, bseCode].filter((value): value is string => Boolean(value));
-
-        for (const key of candidates) {
-            const live = asObject(livePriceData[key]);
-            if (live) return live as GrowwLivePrice;
-        }
-
-        const first = Object.values(livePriceData).map((value) => asObject(value)).find(Boolean);
-        return first as GrowwLivePrice | null;
+        return extractLivePriceFromNextData(
+            nextData,
+            cleanText(header?.nseScriptCode, 80),
+            cleanText(header?.bseScriptCode, 80),
+        );
     } catch (error) {
         log.debug('Failed to parse Groww live stock price from HTML', {
             searchId,
-            message: error instanceof Error ? error.message : String(error),
+            message: errorMessage(error),
         });
         return null;
     }
 }
 
+export function parseSearchResponse(value: unknown): GrowwSearchItem[] {
+    const root = asObject(value);
+    const data = asObject(root?.data);
+    if (!root || !data || !Array.isArray(data.content)) {
+        throw new Error('Groww search response did not contain data.content as an array.');
+    }
+    if (!data.content.every(isObject)) {
+        throw new Error('Groww search response contained a non-object item.');
+    }
+    return data.content as GrowwSearchItem[];
+}
+
+export function parseFundamentalMetrics(current: unknown, legacy: unknown = null): StockFundamentals {
+    const legacyStats = asObject(legacy);
+    const metrics: StockFundamentals = {
+        marketCapCr: numberOrNull(legacyStats?.marketCap),
+        peRatio: roundedNumberOrNull(legacyStats?.peRatio, 2),
+        pbRatio: roundedNumberOrNull(legacyStats?.pbRatio, 2),
+        dividendYieldPercent: roundedNumberOrNull(legacyStats?.dividendYieldInPercent ?? legacyStats?.divYield, 2),
+        epsTtm: roundedNumberOrNull(legacyStats?.epsTtm, 2),
+        roePercent: roundedNumberOrNull(legacyStats?.returnOnEquity ?? legacyStats?.roe, 2),
+        bookValue: roundedNumberOrNull(legacyStats?.bookValue, 2),
+        cappedType: cleanText(legacyStats?.cappedType, 100),
+    };
+
+    for (const value of arrayValue(current) ?? []) {
+        const item = asObject(value);
+        if (!item) continue;
+        const label = cleanText(item.name ?? item.label ?? item.title ?? item.key, 100)?.toLocaleLowerCase('en-US');
+        const raw = item.value ?? item.val ?? item.displayValue;
+        if (!label) continue;
+
+        if (label.includes('market cap')) metrics.marketCapCr = parseDisplayNumber(raw);
+        else if (label === 'p/e' || label.includes('p/e ratio') || label.includes('price to earnings')) {
+            metrics.peRatio = roundedNumberOrNull(raw, 2);
+        } else if (label === 'p/b' || label.includes('p/b ratio') || label.includes('price to book')) {
+            metrics.pbRatio = roundedNumberOrNull(raw, 2);
+        } else if (label.includes('dividend yield')) metrics.dividendYieldPercent = roundedNumberOrNull(raw, 2);
+        else if (label.startsWith('eps') || label.includes('earnings per share')) metrics.epsTtm = roundedNumberOrNull(raw, 2);
+        else if (label === 'roe' || label.includes('return on equity')) metrics.roePercent = roundedNumberOrNull(raw, 2);
+        else if (label.includes('book value')) metrics.bookValue = roundedNumberOrNull(raw, 2);
+        else if (label.includes('market cap category') || label.includes('cap type')) {
+            metrics.cappedType = cleanText(raw, 100);
+        }
+    }
+
+    return metrics;
+}
+
+export function parseDisplayNumber(value: unknown): number | null {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (typeof value !== 'string') return null;
+    const normalized = value.trim().replace(/,/g, '').replace(/[₹$€£]/g, '');
+    if (!normalized) return null;
+    const match = normalized.match(/^[+\-]?(?:\d+(?:\.\d+)?|\.\d+)/);
+    if (!match) return null;
+    const parsed = Number(match[0]);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function extractLivePriceFromNextData(
+    nextData: unknown,
+    nseCode: string | null,
+    bseCode: string | null,
+): GrowwLivePrice | null {
+    const root = asObject(nextData);
+    const props = asObject(root?.props);
+    const pageProps = asObject(props?.pageProps);
+    const livePriceData = asObject(pageProps?.livePriceData);
+    if (!livePriceData) return null;
+
+    const keyByUpperCase = new Map(Object.keys(livePriceData).map((key) => [key.toLocaleUpperCase('en-US'), key]));
+    for (const candidate of [nseCode, bseCode]) {
+        if (!candidate) continue;
+        const matchedKey = keyByUpperCase.get(candidate.toLocaleUpperCase('en-US'));
+        const live = matchedKey ? asObject(livePriceData[matchedKey]) : null;
+        if (live) return live as GrowwLivePrice;
+    }
+    return null;
+}
+
+export function validateRecord(record: GrowwAssetRecord): string | null {
+    if (record.source !== 'groww') return 'source must be groww.';
+    if (record.currency !== 'INR') return 'currency must be INR.';
+    if (!record.query || !record.name || !record.searchId) return 'query, name, and searchId are required.';
+    if (!isValidGrowwUrl(record.growwUrl, record.assetType)) return 'growwUrl is not a valid Groww asset URL.';
+    if (!Number.isFinite(Date.parse(record.scrapedAt))) return 'scrapedAt is not a valid timestamp.';
+    if (record.stock !== null === (record.assetType !== 'stock')) return 'stock details do not match assetType.';
+    if (record.mutualFund !== null === (record.assetType !== 'mutual_fund')) return 'mutual fund details do not match assetType.';
+    if (!allNumbersFinite(record)) return 'record contains a non-finite numeric value.';
+    if (record.stock?.currentPrice !== null && record.stock?.currentPrice !== undefined && record.stock.currentPrice <= 0) {
+        return 'stock currentPrice must be positive when present.';
+    }
+    if (record.mutualFund?.nav !== null && record.mutualFund?.nav !== undefined && record.mutualFund.nav <= 0) {
+        return 'mutual fund NAV must be positive when present.';
+    }
+    const rating = record.mutualFund?.growwRating;
+    if (rating !== null && rating !== undefined && (rating < 0 || rating > 5)) return 'Groww rating must be from 0 to 5.';
+    return null;
+}
+
 function parseNextData(html: string): Record<string, unknown> {
-    const match = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    const match = html.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
     if (!match?.[1]) throw new Error('Groww __NEXT_DATA__ payload not found.');
     const parsed = JSON.parse(match[1]) as unknown;
     if (!isObject(parsed)) throw new Error('Groww __NEXT_DATA__ payload was not an object.');
     return parsed;
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
-    const response = await fetchWithRetry(url, 'json');
-    return (await response.json()) as T;
+async function fetchJson(url: string, dependencies: ScrapeDependencies): Promise<unknown> {
+    const text = await fetchPayloadWithRetry(url, dependencies);
+    if (!text.trim()) throw new Error(`Empty JSON response from ${url}`);
+    if (/^\s*</.test(text)) throw new Error(`Expected JSON but received HTML from ${url}`);
+    try {
+        return JSON.parse(text) as unknown;
+    } catch (error) {
+        throw new Error(`Malformed JSON response from ${url}: ${errorMessage(error)}`);
+    }
 }
 
-async function fetchText(url: string): Promise<string> {
-    const response = await fetchWithRetry(url, 'text');
-    return response.text();
+async function fetchText(url: string, dependencies: ScrapeDependencies): Promise<string> {
+    return fetchPayloadWithRetry(url, dependencies);
 }
 
-async function fetchWithRetry(url: string, expected: 'json' | 'text'): Promise<Response> {
+async function fetchPayloadWithRetry(url: string, dependencies: ScrapeDependencies): Promise<string> {
     let lastError: Error | undefined;
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= dependencies.maxFetchAttempts; attempt++) {
         try {
-            const response = await fetch(url, { headers: DEFAULT_HEADERS });
-            if (response.ok) return response;
+            const response = await dependencies.fetch(url, {
+                headers: DEFAULT_HEADERS,
+                signal: AbortSignal.timeout(dependencies.requestTimeoutMs),
+            });
+            if (response.ok) return await response.text();
 
             const retryable = response.status === 429 || response.status >= 500;
-            if (!retryable) throw new Error(`HTTP ${response.status} from ${url}`);
+            const error = new HttpStatusError(response.status, retryable, url);
+            if (!retryable) throw error;
+            lastError = error;
         } catch (error) {
+            if (error instanceof HttpStatusError && !error.retryable) throw error;
             lastError = error instanceof Error ? error : new Error(String(error));
         }
 
-        await sleep(randomInteger(800, 2200) * attempt);
+        if (attempt < dependencies.maxFetchAttempts) {
+            await dependencies.sleep(Math.min(4_000, 500 * (2 ** (attempt - 1))));
+        }
     }
 
-    throw lastError ?? new Error(`Failed to fetch ${expected} from ${url}`);
+    throw lastError ?? new Error(`Failed to fetch ${url}`);
 }
 
 function isWantedItem(item: GrowwSearchItem, source: AssetSource, includeNfoFunds: boolean): boolean {
@@ -389,34 +673,19 @@ function isStockItem(item: GrowwSearchItem): boolean {
     return item.entity_type === 'Stocks';
 }
 
-function isUsefulStockRecord(stock: StockDetails, header: Record<string, unknown> | null): boolean {
-    const hasTradeData = stock.currentPrice !== null || stock.marketCapCr !== null;
-    const hasCompanyProfile = Boolean(stock.industryName || stock.yearHighPrice !== null || stock.yearLowPrice !== null);
-    const isStockHeader = stringValue(header?.type) === 'STOCK' || Boolean(stock.nseScriptCode || stock.bseScriptCode);
-    return isStockHeader && (hasTradeData || hasCompanyProfile);
-}
-
 function isMutualFundItem(item: GrowwSearchItem, includeNfoFunds: boolean): boolean {
     return item.entity_type === 'Scheme' || (includeNfoFunds && item.entity_type === 'Nfo');
 }
 
-function cleanText(value: unknown): string | null {
-    if (typeof value !== 'string') return null;
-    const cleaned = value.replace(/\s+/g, ' ').trim();
-    return cleaned.length > 0 ? cleaned : null;
-}
-
-function stringValue(value: unknown): string | null {
-    return cleanText(value);
+function isUsefulStockRecord(stock: StockDetails, header: Record<string, unknown> | null): boolean {
+    const hasTradeData = stock.currentPrice !== null || stock.marketCapCr !== null;
+    const hasCompanyProfile = Boolean(stock.industryName || stock.yearHighPrice !== null || stock.yearLowPrice !== null);
+    const isStockHeader = cleanText(header?.type, 30) === 'STOCK' || Boolean(stock.nseScriptCode || stock.bseScriptCode);
+    return isStockHeader && (hasTradeData || hasCompanyProfile);
 }
 
 function numberOrNull(value: unknown): number | null {
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if (typeof value === 'string') {
-        const parsed = Number(value.replace(/,/g, ''));
-        return Number.isFinite(parsed) ? parsed : null;
-    }
-    return null;
+    return parseDisplayNumber(value);
 }
 
 function roundedNumberOrNull(value: unknown, decimals: number): number | null {
@@ -435,6 +704,41 @@ function booleanOrNull(value: unknown): boolean | null {
     return typeof value === 'boolean' ? value : null;
 }
 
+function cleanText(value: unknown, maxLength: number): string | null {
+    if (typeof value !== 'string') return null;
+    const cleaned = value.replace(/\s+/g, ' ').trim();
+    if (!cleaned) return null;
+    return cleaned.slice(0, maxLength);
+}
+
+function safeHttpUrl(value: unknown): string | null {
+    const text = cleanText(value, 2_000);
+    if (!text) return null;
+    try {
+        const url = new URL(text);
+        return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : null;
+    } catch {
+        return null;
+    }
+}
+
+function isValidGrowwUrl(value: string, assetType: GrowwAssetRecord['assetType']): boolean {
+    try {
+        const url = new URL(value);
+        if (url.protocol !== 'https:' || url.hostname !== 'groww.in') return false;
+        return assetType === 'stock' ? url.pathname.startsWith('/stocks/') : url.pathname.startsWith('/mutual-funds/');
+    } catch {
+        return false;
+    }
+}
+
+function allNumbersFinite(value: unknown): boolean {
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (Array.isArray(value)) return value.every(allNumbersFinite);
+    if (isObject(value)) return Object.values(value).every(allNumbersFinite);
+    return true;
+}
+
 function arrayValue(value: unknown): unknown[] | null {
     return Array.isArray(value) ? value : null;
 }
@@ -447,21 +751,14 @@ function isObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function unique<T>(values: T[]): T[] {
-    return [...new Set(values)];
+function hasReachedRuntimeLimit(startedAt: number, dependencies: ScrapeDependencies): boolean {
+    return dependencies.now() - startedAt >= dependencies.runtimeLimitMs;
 }
 
-function clampInteger(value: number, min: number, max: number): number {
-    if (!Number.isFinite(value)) return min;
-    return Math.min(Math.max(Math.trunc(value), min), max);
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
 }
 
 function randomInteger(min: number, max: number): number {
     return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => {
-        setTimeout(resolve, ms);
-    });
 }

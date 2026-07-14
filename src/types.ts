@@ -1,5 +1,7 @@
 export type AssetSource = 'stocks' | 'mutual_funds' | 'both';
 export type AssetType = 'stock' | 'mutual_fund';
+export type KeywordOutcome = 'not_run' | 'results' | 'empty' | 'failed';
+export type RunOutcome = 'results' | 'empty' | 'failed' | 'spending_limit' | 'runtime_limit';
 
 export interface ActorInput {
     source?: AssetSource;
@@ -65,6 +67,7 @@ export interface GrowwAssetRecord {
     subCategory: string | null;
     logoUrl: string | null;
     growwUrl: string;
+    currency: 'INR';
     priceOrNav: number | null;
     changeOrReturn: number | null;
     marketCapOrAum: number | null;
@@ -105,8 +108,6 @@ export interface StockDetails {
     yearLowPrice: number | null;
     industryName: string | null;
     headquarters: string | null;
-    ceo: string | null;
-    managingDirector: string | null;
     foundedYear: number | null;
     websiteUrl: string | null;
     businessSummary: string | null;
@@ -140,4 +141,45 @@ export interface MutualFundDetails {
     planType: string | null;
     schemeType: string | null;
     availableForInvestment: boolean | null;
+}
+
+export interface KeywordRunStatus {
+    keyword: string;
+    outcome: KeywordOutcome;
+    searchResults: number;
+    eligibleResults: number;
+    saved: number;
+    detailFailures: number;
+    invalidRecords: number;
+    error: string | null;
+    lastDetailError: string | null;
+}
+
+export interface GrowwRunStatus {
+    status: RunOutcome;
+    source: AssetSource;
+    keywords: string[];
+    requestedMaxResults: number;
+    records: number;
+    searchRequests: number;
+    successfulSearches: number;
+    failedSearches: number;
+    eligibleCandidates: number;
+    duplicateCandidates: number;
+    detailFailures: number;
+    invalidRecords: number;
+    livePriceMisses: number;
+    spendingLimitReached: boolean;
+    runtimeLimitReached: boolean;
+    durationMs: number;
+    keywordResults: KeywordRunStatus[];
+    failureMessage: string | null;
+}
+
+export interface ScrapeResult {
+    records: number;
+    spendingLimitReached: boolean;
+    runtimeLimitReached: boolean;
+    failureMessage: string | null;
+    runStatus: GrowwRunStatus;
 }

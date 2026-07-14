@@ -1,7 +1,7 @@
 {
-  "source": "both",
-  "keywords": ["reliance", "parag parikh flexi cap"],
-  "maxResults": 10,
+  "source": "stocks",
+  "keywords": ["reliance"],
+  "maxResults": 1,
   "includeStockLivePrice": true,
   "includeNfoFunds": false
 }

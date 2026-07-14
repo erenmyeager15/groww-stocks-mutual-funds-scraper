@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test src/input.test.ts src/routes.test.ts",
     "start": "node dist/main.js",
     "dev": "tsx src/main.ts"
   },

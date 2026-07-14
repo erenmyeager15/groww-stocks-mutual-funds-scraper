@@ -16,6 +16,7 @@
       "subCategory": { "type": ["string", "null"], "title": "Sub Category", "example": "Large Cap" },
       "logoUrl": { "type": ["string", "null"], "title": "Logo URL" },
       "growwUrl": { "type": "string", "title": "Groww URL" },
+      "currency": { "type": "string", "title": "Currency", "example": "INR" },
       "priceOrNav": { "type": ["number", "null"], "title": "Price / NAV" },
       "changeOrReturn": { "type": ["number", "null"], "title": "Change / Return %" },
       "marketCapOrAum": { "type": ["number", "null"], "title": "Market Cap / AUM" },
@@ -31,7 +32,8 @@
       "stock": { "type": ["object", "null"], "title": "Stock Details" },
       "mutualFund": { "type": ["object", "null"], "title": "Mutual Fund Details" },
       "scrapedAt": { "type": "string", "title": "Scraped At" }
-    }
+    },
+    "required": ["source", "query", "assetType", "name", "searchId", "growwUrl", "currency", "scrapedAt"]
   },
   "views": {
     "overview": {
@@ -45,6 +47,7 @@
           "symbol",
           "category",
           "subCategory",
+          "currency",
           "priceOrNav",
           "changeOrReturn",
           "marketCapOrAum",
@@ -60,6 +63,7 @@
           "symbol": { "label": "Symbol", "format": "text" },
           "category": { "label": "Category", "format": "text" },
           "subCategory": { "label": "Subcategory", "format": "text" },
+          "currency": { "label": "Currency", "format": "text" },
           "priceOrNav": { "label": "Price / NAV", "format": "number" },
           "changeOrReturn": { "label": "Change / 1Y %", "format": "number" },
           "marketCapOrAum": { "label": "MCap / AUM Cr", "format": "number" },
@@ -81,6 +85,7 @@
           "category",
           "subCategory",
           "growwUrl",
+          "currency",
           "priceOrNav",
           "changeOrReturn",
           "marketCapOrAum",

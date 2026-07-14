@@ -25,6 +25,13 @@
     "pricingModel": "PAY_PER_EVENT",
     "pricingPerEvent": {
       "actorChargeEvents": {
+        "apify-actor-start": {
+          "eventTitle": "Actor start",
+          "eventDescription": "Small startup charge applied when a run starts, matching the active Store price.",
+          "eventPriceUsd": 0.00005,
+          "isPrimaryEvent": false,
+          "isOneTimeEvent": true
+        },
         "asset-scraped": {
           "eventTitle": "Asset scraped",
           "eventDescription": "Charged once for each clean Groww stock or mutual fund record saved to the dataset.",
