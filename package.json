@@ -4,6 +4,7 @@
   "description": "Apify Actor for scraping Groww stocks and mutual funds data.",
   "type": "module",
   "scripts": {
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test src/input.test.ts src/routes.test.ts",
@@ -21,5 +22,8 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.8"
   }
 }
