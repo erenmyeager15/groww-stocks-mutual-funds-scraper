@@ -20,7 +20,8 @@
     "memoryMbytes": 512,
     "timeoutSecs": 1200
   },
-  "categories": ["OTHER", "AUTOMATION", "DEVELOPER_TOOLS"],
+  "categories": ["BUSINESS", "AUTOMATION", "DEVELOPER_TOOLS"],
+  "categoriesVersion": "1.0.0",
   "pricingInfo": {
     "pricingModel": "PAY_PER_EVENT",
     "pricingPerEvent": {
